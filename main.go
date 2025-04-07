@@ -22,21 +22,25 @@ const (
 	River
 )
 
-// World contains the game state
-type World struct {
-	Player  Player
-	Width   int
-	Height  int
-	Terrain [][]int
-}
-
 // GameState tracks whether we're on the title screen or in the game
 type GameState int
 
 const (
 	TitleScreen GameState = iota
 	Playing
+	GameOver
+	Win
 )
+
+// World contains the game state
+type World struct {
+	Player   Player
+	Width    int
+	Height   int
+	Terrain  [][]int
+	GameOver bool
+	Score    int
+}
 
 type model struct {
 	state  GameState
@@ -54,6 +58,7 @@ func initialModel() model {
 				X: 10,
 				Y: 5,
 			},
+			Score: 0,
 		},
 	}
 }
@@ -109,6 +114,71 @@ func (m model) initializeTerrain() model {
 	}
 
 	m.world.Terrain = terrain
+
+	// Place the player in the river at the bottom
+	// Find a point in the last row that is part of the river
+	lastRow := height - 1
+
+	// Find the leftmost and rightmost points of the river in the last row
+	leftmost := -1
+	rightmost := -1
+	for x := 0; x < width; x++ {
+		if terrain[lastRow][x] == River {
+			if leftmost == -1 {
+				leftmost = x
+			}
+			rightmost = x
+		}
+	}
+
+	// Place the player in the middle of the river
+	if leftmost != -1 && rightmost != -1 {
+		m.world.Player.X = leftmost + (rightmost-leftmost)/2
+		m.world.Player.Y = lastRow
+	} else {
+		// Fallback if no river is found
+		for x := 0; x < width; x++ {
+			if terrain[lastRow][x] == River {
+				m.world.Player.X = x
+				m.world.Player.Y = lastRow
+				break
+			}
+		}
+	}
+
+	return m
+}
+
+// Check if the player has collided with land
+func (m model) checkCollision() model {
+	playerX := m.world.Player.X
+	playerY := m.world.Player.Y
+
+	// Check boundaries
+	if playerY < 0 || playerY >= len(m.world.Terrain) ||
+		playerX < 0 || playerX >= len(m.world.Terrain[0]) {
+		m.state = GameOver
+		return m
+	}
+
+	// Check if player is on land
+	if m.world.Terrain[playerY][playerX] == Land {
+		m.state = GameOver
+		return m
+	}
+
+	// Check for win condition - reaching the top row
+	if playerY == 0 {
+		m.state = Win
+		return m
+	}
+
+	// If we're still playing, increment score
+	// Only increment score when moving up (away from starting position)
+	if m.world.Player.Y < len(m.world.Terrain)-1 {
+		m.world.Score++
+	}
+
 	return m
 }
 
@@ -123,9 +193,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 
-		case "s":
-			if m.state == TitleScreen {
+		case "s", "r":
+			// Start game with 's' or restart with 'r'
+			if m.state == TitleScreen || m.state == GameOver || m.state == Win {
 				m.state = Playing
+				m.world.Score = 0
 				// Initialize the terrain when starting the game
 				m = m.initializeTerrain()
 			}
@@ -134,21 +206,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.state == Playing && m.world.Player.Y > 0 {
 				m.world.Player.Y--
+				m = m.checkCollision()
 			}
 
 		case "down", "j":
 			if m.state == Playing && m.world.Player.Y < m.height-3 {
 				m.world.Player.Y++
+				m = m.checkCollision()
 			}
 
 		case "left", "h":
 			if m.state == Playing && m.world.Player.X > 0 {
 				m.world.Player.X--
+				m = m.checkCollision()
 			}
 
 		case "right", "l":
 			if m.state == Playing && m.world.Player.X < m.width-1 {
 				m.world.Player.X++
+				m = m.checkCollision()
 			}
 		}
 
@@ -159,10 +235,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update the world dimensions
 		m.world.Width = msg.Width
 		m.world.Height = msg.Height
-
-		// Center the player when window size changes
-		m.world.Player.X = msg.Width / 2
-		m.world.Player.Y = msg.Height / 2
 
 		// Re-initialize terrain if playing
 		if m.state == Playing {
@@ -253,7 +325,92 @@ func (m model) renderGameScreen() string {
 		view += line + "\n"
 	}
 
-	view += "\nUse arrow keys to move. Press q to quit."
+	// Add score and instructions to status line
+	view += fmt.Sprintf("\nScore: %d | Navigate to the top! Use arrow keys to move. Avoid land (.) | Press q to quit", m.world.Score)
+
+	return view
+}
+
+func (m model) renderGameOverScreen() string {
+	// Create a stylish game over message
+	gameOverStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FF0000")).
+		Background(lipgloss.Color("#000000")).
+		PaddingLeft(2).
+		PaddingRight(2)
+
+	gameOver := gameOverStyle.Render("GAME OVER")
+	gameOver = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, gameOver)
+
+	// Create score message
+	scoreStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FFFFFF"))
+
+	scoreMsg := fmt.Sprintf("Final Score: %d", m.world.Score)
+	scoreMsg = scoreStyle.Render(scoreMsg)
+	scoreMsg = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, scoreMsg)
+
+	// Create restart instruction
+	restartMsg := "Press 'r' to restart"
+	restartMsg = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, restartMsg)
+
+	// Center vertically
+	verticalPadding := m.height/2 - 3
+	view := ""
+	for i := 0; i < verticalPadding; i++ {
+		view += "\n"
+	}
+
+	view += gameOver + "\n\n"
+	view += scoreMsg + "\n\n"
+	view += restartMsg + "\n\n"
+
+	// Add quit message at bottom
+	view += lipgloss.PlaceHorizontal(m.width, lipgloss.Center, "Press q to quit")
+
+	return view
+}
+
+func (m model) renderWinScreen() string {
+	// Create a stylish win message
+	winStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FFFF00")).
+		Background(lipgloss.Color("#009900")).
+		PaddingLeft(2).
+		PaddingRight(2)
+
+	winMsg := winStyle.Render("YOU WIN!")
+	winMsg = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, winMsg)
+
+	// Create score message
+	scoreStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FFFFFF"))
+
+	scoreMsg := fmt.Sprintf("Final Score: %d", m.world.Score)
+	scoreMsg = scoreStyle.Render(scoreMsg)
+	scoreMsg = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, scoreMsg)
+
+	// Create restart instruction
+	restartMsg := "Press 'r' to play again"
+	restartMsg = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, restartMsg)
+
+	// Center vertically
+	verticalPadding := m.height/2 - 3
+	view := ""
+	for i := 0; i < verticalPadding; i++ {
+		view += "\n"
+	}
+
+	view += winMsg + "\n\n"
+	view += scoreMsg + "\n\n"
+	view += restartMsg + "\n\n"
+
+	// Add quit message at bottom
+	view += lipgloss.PlaceHorizontal(m.width, lipgloss.Center, "Press q to quit")
 
 	return view
 }
@@ -269,13 +426,16 @@ func (m model) View() string {
 		return m.renderTitleScreen()
 	case Playing:
 		return m.renderGameScreen()
+	case GameOver:
+		return m.renderGameOverScreen()
+	case Win:
+		return m.renderWinScreen()
 	default:
 		return "Unknown state"
 	}
 }
 
 func main() {
-
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error running program: %v", err)
