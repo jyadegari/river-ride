@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -34,12 +35,13 @@ const (
 
 // World contains the game state
 type World struct {
-	Player   Player
-	Width    int
-	Height   int
-	Terrain  [][]int
-	GameOver bool
-	Score    int
+	Player       Player
+	Width        int
+	Height       int
+	Terrain      [][]int
+	GameOver     bool
+	Score        int
+	ScrollTicker int
 }
 
 type model struct {
@@ -47,6 +49,15 @@ type model struct {
 	world  World
 	width  int
 	height int
+}
+
+// TickMsg is sent when the game should update for scrolling
+type TickMsg time.Time
+
+func tick() tea.Cmd {
+	return tea.Tick(time.Millisecond*200, func(t time.Time) tea.Msg {
+		return TickMsg(t)
+	})
 }
 
 func initialModel() model {
@@ -58,7 +69,8 @@ func initialModel() model {
 				X: 10,
 				Y: 5,
 			},
-			Score: 0,
+			Score:        0,
+			ScrollTicker: 0,
 		},
 	}
 }
@@ -115,15 +127,109 @@ func (m model) initializeTerrain() model {
 
 	m.world.Terrain = terrain
 
-	// Place the player in the river at the bottom
-	// Find a point in the last row that is part of the river
-	lastRow := height - 1
+	// Set up player position
+	m = m.placePlayerInRiver()
 
-	// Find the leftmost and rightmost points of the river in the last row
+	return m
+}
+
+// Generate a new row of terrain for scrolling
+func (m model) generateNewRow() []int {
+	width := m.width
+	newRow := make([]int, width)
+
+	// Initialize as land
+	for x := 0; x < width; x++ {
+		newRow[x] = Land
+	}
+
+	// Get river properties from the current first row
+	riverLeft := -1
+	riverRight := -1
+	for x := 0; x < width; x++ {
+		if m.world.Terrain[0][x] == River {
+			if riverLeft == -1 {
+				riverLeft = x
+			}
+			riverRight = x
+		}
+	}
+
+	if riverLeft == -1 || riverRight == -1 {
+		// Fallback if no river found
+		centerX := width / 2
+		riverWidth := 15
+
+		for x := centerX - riverWidth/2; x <= centerX+riverWidth/2; x++ {
+			if x >= 0 && x < width {
+				newRow[x] = River
+			}
+		}
+		return newRow
+	}
+
+	// Calculate river center and width
+	riverCenter := riverLeft + (riverRight-riverLeft)/2
+	riverWidth := riverRight - riverLeft + 1
+
+	// Randomly adjust river center with slight movement
+	riverCenter += rand.Intn(3) - 1
+
+	// Sometimes change river width slightly
+	if rand.Intn(10) == 0 {
+		riverWidth += rand.Intn(3) - 1
+		if riverWidth < 8 {
+			riverWidth = 8 // Minimum width
+		}
+	}
+
+	// Create the new river segment
+	for x := riverCenter - riverWidth/2; x <= riverCenter+riverWidth/2; x++ {
+		if x >= 0 && x < width {
+			newRow[x] = River
+		}
+	}
+
+	// Occasionally add a branch
+	if rand.Intn(20) == 0 {
+		branchStart := riverCenter
+		branchDir := 1
+		if rand.Intn(2) == 0 {
+			branchDir = -1
+		}
+
+		branchWidth := rand.Intn(5) + 2
+		for i := 0; i < branchWidth; i++ {
+			x := branchStart + i*branchDir
+			if x >= 0 && x < width {
+				newRow[x] = River
+			}
+		}
+	}
+
+	return newRow
+}
+
+// Place the player in the middle of the river
+func (m model) placePlayerInRiver() model {
+	height := len(m.world.Terrain)
+	width := len(m.world.Terrain[0])
+
+	if height == 0 || width == 0 {
+		return m
+	}
+
+	// Fixed Y position near the bottom
+	playerY := height - 5
+	if playerY < 0 {
+		playerY = 0
+	}
+
+	// Find river boundaries at the player's Y position
 	leftmost := -1
 	rightmost := -1
 	for x := 0; x < width; x++ {
-		if terrain[lastRow][x] == River {
+		if m.world.Terrain[playerY][x] == River {
 			if leftmost == -1 {
 				leftmost = x
 			}
@@ -134,17 +240,40 @@ func (m model) initializeTerrain() model {
 	// Place the player in the middle of the river
 	if leftmost != -1 && rightmost != -1 {
 		m.world.Player.X = leftmost + (rightmost-leftmost)/2
-		m.world.Player.Y = lastRow
+		m.world.Player.Y = playerY
 	} else {
-		// Fallback if no river is found
-		for x := 0; x < width; x++ {
-			if terrain[lastRow][x] == River {
-				m.world.Player.X = x
-				m.world.Player.Y = lastRow
-				break
+		// Fallback - find any river spot
+		for y := height - 1; y >= 0; y-- {
+			for x := 0; x < width; x++ {
+				if m.world.Terrain[y][x] == River {
+					m.world.Player.X = x
+					m.world.Player.Y = y
+					return m
+				}
 			}
 		}
 	}
+
+	return m
+}
+
+// Scroll the terrain up by one row
+func (m model) scrollTerrain() model {
+	height := len(m.world.Terrain)
+	if height <= 1 {
+		return m
+	}
+
+	// Move all rows up
+	for y := 0; y < height-1; y++ {
+		m.world.Terrain[y] = m.world.Terrain[y+1]
+	}
+
+	// Generate new bottom row
+	m.world.Terrain[height-1] = m.generateNewRow()
+
+	// Increment score
+	m.world.Score++
 
 	return m
 }
@@ -167,27 +296,31 @@ func (m model) checkCollision() model {
 		return m
 	}
 
-	// Check for win condition - reaching the top row
-	if playerY == 0 {
-		m.state = Win
-		return m
-	}
-
-	// If we're still playing, increment score
-	// Only increment score when moving up (away from starting position)
-	if m.world.Player.Y < len(m.world.Terrain)-1 {
-		m.world.Score++
-	}
-
 	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return tick()
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case TickMsg:
+		if m.state == Playing {
+			// Increment the scroll ticker
+			m.world.ScrollTicker++
+
+			// Scroll every few ticks
+			if m.world.ScrollTicker >= 5 {
+				m = m.scrollTerrain()
+				m = m.checkCollision() // Check if player has hit land after scroll
+				m.world.ScrollTicker = 0
+			}
+
+			return m, tick()
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -198,8 +331,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == TitleScreen || m.state == GameOver || m.state == Win {
 				m.state = Playing
 				m.world.Score = 0
+				m.world.ScrollTicker = 0
 				// Initialize the terrain when starting the game
 				m = m.initializeTerrain()
+				return m, tick()
 			}
 
 		// Add player movement controls when in playing state
@@ -254,7 +389,7 @@ func (m model) renderTitleScreen() string {
 		PaddingLeft(2).
 		PaddingRight(2)
 
-	title := titleStyle.Render("River Ride")
+	title := titleStyle.Render("Endless River Ride")
 	title = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title)
 
 	// Center vertically with empty lines
@@ -326,7 +461,7 @@ func (m model) renderGameScreen() string {
 	}
 
 	// Add score and instructions to status line
-	view += fmt.Sprintf("\nScore: %d | Navigate to the top! Use arrow keys to move. Avoid land (.) | Press q to quit", m.world.Score)
+	view += fmt.Sprintf("\nScore: %d | Navigate through the river! Use arrow keys to move. Avoid land (.) | Press q to quit", m.world.Score)
 
 	return view
 }
@@ -373,48 +508,6 @@ func (m model) renderGameOverScreen() string {
 	return view
 }
 
-func (m model) renderWinScreen() string {
-	// Create a stylish win message
-	winStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FFFF00")).
-		Background(lipgloss.Color("#009900")).
-		PaddingLeft(2).
-		PaddingRight(2)
-
-	winMsg := winStyle.Render("YOU WIN!")
-	winMsg = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, winMsg)
-
-	// Create score message
-	scoreStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FFFFFF"))
-
-	scoreMsg := fmt.Sprintf("Final Score: %d", m.world.Score)
-	scoreMsg = scoreStyle.Render(scoreMsg)
-	scoreMsg = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, scoreMsg)
-
-	// Create restart instruction
-	restartMsg := "Press 'r' to play again"
-	restartMsg = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, restartMsg)
-
-	// Center vertically
-	verticalPadding := m.height/2 - 3
-	view := ""
-	for i := 0; i < verticalPadding; i++ {
-		view += "\n"
-	}
-
-	view += winMsg + "\n\n"
-	view += scoreMsg + "\n\n"
-	view += restartMsg + "\n\n"
-
-	// Add quit message at bottom
-	view += lipgloss.PlaceHorizontal(m.width, lipgloss.Center, "Press q to quit")
-
-	return view
-}
-
 func (m model) View() string {
 	if m.width == 0 {
 		return "Loading..."
@@ -428,8 +521,6 @@ func (m model) View() string {
 		return m.renderGameScreen()
 	case GameOver:
 		return m.renderGameOverScreen()
-	case Win:
-		return m.renderWinScreen()
 	default:
 		return "Unknown state"
 	}
