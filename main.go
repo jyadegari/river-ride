@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"math"
+	"math/rand"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,11 +16,18 @@ type Player struct {
 	Y int
 }
 
+// Terrain types
+const (
+	Land = iota
+	River
+)
+
 // World contains the game state
 type World struct {
-	Player Player
-	Width  int
-	Height int
+	Player  Player
+	Width   int
+	Height  int
+	Terrain [][]int
 }
 
 // GameState tracks whether we're on the title screen or in the game
@@ -49,6 +58,60 @@ func initialModel() model {
 	}
 }
 
+// Initialize the world terrain with a river
+func (m model) initializeTerrain() model {
+	width := m.width
+	height := m.height - 2 // Account for status area
+
+	// Create terrain grid
+	terrain := make([][]int, height)
+	for y := 0; y < height; y++ {
+		terrain[y] = make([]int, width)
+		// Initialize everything as land
+		for x := 0; x < width; x++ {
+			terrain[y][x] = Land
+		}
+	}
+
+	// Create a winding river through the middle
+	// Random river width between 10 and 20
+	riverWidth := rand.Intn(11) + 10
+	centerX := width / 2
+
+	// Generate a winding river
+	for y := 0; y < height; y++ {
+		// Make the river wind using a sine wave
+		offset := int(math.Sin(float64(y)/5) * 10)
+		riverCenter := centerX + offset
+
+		// Create the river with specified width
+		for x := riverCenter - riverWidth/2; x <= riverCenter+riverWidth/2; x++ {
+			if x >= 0 && x < width {
+				terrain[y][x] = River
+			}
+		}
+
+		// Occasionally add small river branches
+		if rand.Intn(20) == 0 {
+			branchLength := rand.Intn(10) + 5
+			branchDirection := 1
+			if rand.Intn(2) == 0 {
+				branchDirection = -1
+			}
+
+			for i := 0; i < branchLength; i++ {
+				branchX := riverCenter + (i+1)*branchDirection
+				if branchX >= 0 && branchX < width && y+i < height {
+					terrain[y+i][branchX] = River
+				}
+			}
+		}
+	}
+
+	m.world.Terrain = terrain
+	return m
+}
+
 func (m model) Init() tea.Cmd {
 	return nil
 }
@@ -63,6 +126,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s":
 			if m.state == TitleScreen {
 				m.state = Playing
+				// Initialize the terrain when starting the game
+				m = m.initializeTerrain()
 			}
 
 		// Add player movement controls when in playing state
@@ -98,6 +163,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Center the player when window size changes
 		m.world.Player.X = msg.Width / 2
 		m.world.Player.Y = msg.Height / 2
+
+		// Re-initialize terrain if playing
+		if m.state == Playing {
+			m = m.initializeTerrain()
+		}
 	}
 
 	return m, nil
@@ -151,6 +221,22 @@ func (m model) renderGameScreen() string {
 		}
 	}
 
+	// Render the terrain
+	terrainHeight := len(m.world.Terrain)
+	if terrainHeight > 0 {
+		terrainWidth := len(m.world.Terrain[0])
+
+		for y := 0; y < terrainHeight && y < m.height-2; y++ {
+			for x := 0; x < terrainWidth && x < m.width; x++ {
+				if m.world.Terrain[y][x] == Land {
+					grid[y][x] = "."
+				} else if m.world.Terrain[y][x] == River {
+					grid[y][x] = " "
+				}
+			}
+		}
+	}
+
 	// Place the player on the grid
 	player := "P"
 	if m.world.Player.Y < m.height && m.world.Player.X < m.width {
@@ -189,6 +275,7 @@ func (m model) View() string {
 }
 
 func main() {
+
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error running program: %v", err)
