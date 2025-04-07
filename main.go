@@ -21,15 +21,25 @@ type World struct {
 	Height int
 }
 
+// GameState tracks whether we're on the title screen or in the game
+type GameState int
+
+const (
+	TitleScreen GameState = iota
+	Playing
+)
+
 type model struct {
+	state  GameState
 	world  World
 	width  int
 	height int
 }
 
 func initialModel() model {
-	// Create a player in the middle of a default-sized world
+	// Start on the title screen
 	return model{
+		state: TitleScreen,
 		world: World{
 			Player: Player{
 				X: 10,
@@ -49,6 +59,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+
+		case "s":
+			if m.state == TitleScreen {
+				m.state = Playing
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -67,11 +82,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) View() string {
-	if m.width == 0 {
-		return "Loading..."
-	}
-
+func (m model) renderTitleScreen() string {
 	// Create the title
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -83,6 +94,33 @@ func (m model) View() string {
 	title := titleStyle.Render("River Ride")
 	title = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title)
 
+	// Center vertically with empty lines
+	verticalPadding := m.height/2 - 2
+	view := ""
+	for i := 0; i < verticalPadding; i++ {
+		view += "\n"
+	}
+
+	view += title + "\n\n"
+
+	// Add instructions
+	instructions := "Press 's' to start the game"
+	instructions = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, instructions)
+	view += instructions + "\n"
+
+	// Add quit message at bottom left
+	// Add empty lines to push the quit message to the bottom
+	remainingLines := m.height - verticalPadding - 5 // Adjust for title and instructions
+	for i := 0; i <= remainingLines; i++ {
+		view += "\n"
+	}
+
+	view += "Press q to quit"
+
+	return view
+}
+
+func (m model) renderGameScreen() string {
 	// Create a grid for the game world
 	grid := make([][]string, m.height)
 	for y := 0; y < m.height; y++ {
@@ -99,7 +137,7 @@ func (m model) View() string {
 	}
 
 	// Convert the grid to a string
-	view := title + "\n\n"
+	view := ""
 	for y := 0; y < m.height-2; y++ {
 		line := ""
 		for x := 0; x < m.width; x++ {
@@ -111,6 +149,22 @@ func (m model) View() string {
 	view += "\nPress q to quit."
 
 	return view
+}
+
+func (m model) View() string {
+	if m.width == 0 {
+		return "Loading..."
+	}
+
+	// Render different screens based on game state
+	switch m.state {
+	case TitleScreen:
+		return m.renderTitleScreen()
+	case Playing:
+		return m.renderGameScreen()
+	default:
+		return "Unknown state"
+	}
 }
 
 func main() {
