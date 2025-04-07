@@ -64,6 +64,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == TitleScreen {
 				m.state = Playing
 			}
+
+		// Add player movement controls when in playing state
+		case "up", "k":
+			if m.state == Playing && m.world.Player.Y > 0 {
+				m.world.Player.Y--
+			}
+
+		case "down", "j":
+			if m.state == Playing && m.world.Player.Y < m.height-3 {
+				m.world.Player.Y++
+			}
+
+		case "left", "h":
+			if m.state == Playing && m.world.Player.X > 0 {
+				m.world.Player.X--
+			}
+
+		case "right", "l":
+			if m.state == Playing && m.world.Player.X < m.width-1 {
+				m.world.Player.X++
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -146,7 +167,7 @@ func (m model) renderGameScreen() string {
 		view += line + "\n"
 	}
 
-	view += "\nPress q to quit."
+	view += "\nUse arrow keys to move. Press q to quit."
 
 	return view
 }
